@@ -31,16 +31,16 @@ sed -i 's/fprintf (stderr/\/\//' elfcomm.c
 # Fix a dlltool leak, which won't be fixed upstream because it uses a
 # non-posix yacc feature.  It also isn't seen as a direct leak when
 # running dlltool stand-alone.
-sed -i '/^%%$/i%destructor { free (\$\$); } ID' defparse.y
 
 cd ../
 
 ./configure --disable-gdb --disable-gdbserver --disable-gdbsupport \
 	    --disable-libdecnumber --disable-readline --disable-sim \
-	    --disable-libbacktrace --disable-gas --disable-ld --disable-werror \
-      --enable-targets=all
+	    --disable-libbacktrace --disable-gas --disable-ld --disable-werror
 make clean
 make MAKEINFO=true -j$(nproc) && true
+
+cp binutils/strings $OUT/strings
 
 
 # Make fuzzer directory
@@ -85,10 +85,9 @@ cp ../../fuzz_*.c .
 sed 's/main (int argc/old_main (int argc, char **argv);\nint old_main (int argc/' readelf.c >> readelf.h
 
 # Special handling of dlltool
-sed 's/main (int ac/old_main32 (int ac, char **av);\nint old_main32 (int ac/' dlltool.c > fuzz_dlltool.h
 
 # Patch the rest
-for i in objdump nm objcopy windres strings addr2line; do
+for i in objdump nm strings addr2line; do
     sed -i 's/strip_main/strip_mian/g' $i.c
     sed -i 's/copy_main/copy_mian/g' $i.c
     sed 's/main (int argc/old_main32 (int argc, char **argv);\nint old_main32 (int argc/' $i.c > fuzz_$i.h
@@ -107,12 +106,11 @@ fuzz_compile () {
     -Dbin_dummy_emulation=bin_vanilla_emulation -W -Wall -MT \
     fuzz_$dst.o -MD -MP -c -o fuzz_$dst.o fuzz_$src.c
 }
-for i in objdump readelf nm objcopy objcopy_options windres ranlib_simulation strings addr2line dwarf; do
+for i in objdump readelf nm ranlib_simulation strings addr2line dwarf; do
   fuzz_compile $i $i ""
 done
 
 # Fuzzers that need additional flags
-fuzz_compile dlltool dlltool "-DDLLTOOL_I386 -DDLLTOOL_DEFAULT_I386"
 fuzz_compile objdump objdump_safe "-DOBJDUMP_SAFE"
 fuzz_compile readelf readelf_pef "-DREADELF_TARGETED=\"pef\""
 fuzz_compile readelf readelf_elf32_bigarm "-DREADELF_TARGETED=\"elf32-bigarm\""
@@ -128,7 +126,7 @@ fuzz_compile readelf readelf_elf32_csky "-DREADELF_TARGETED=\"elf32-csky\""
 LINK_LIBS="-Wl,--start-group ${LIBS} -Wl,--end-group"
 OBJ1="bucomm.o version.o filemode.o"
 OBJ2="version.o unwind-ia64.o dwarf.o elfcomm.o demanguse.o"
-OBJ3="dwarf.o prdbg.o rddbg.o unwind-ia64.o debug.o stabs.o rdcoff.o bucomm.o version.o filemode.o elfcomm.o od-xcoff.o demanguse.o"
+OBJ3="dwarf.o prdbg.o rddbg.o unwind-ia64.o debug.o stabs.o rdcoff.o bucomm.o version.o filemode.o elfcomm.o demanguse.o"
 
 declare -A fl
 fl["readelf"]=${OBJ2}
@@ -141,11 +139,7 @@ fl["objdump"]=${OBJ3}
 fl["objdump_safe"]=${OBJ3}
 fl["dwarf"]=${OBJ3}
 fl["addr2line"]=${OBJ1}
-fl["objcopy"]="rename.o rddbg.o debug.o stabs.o rdcoff.o wrstabs.o ${OBJ1}"
-fl["objcopy_options"]="rename.o rddbg.o debug.o stabs.o rdcoff.o wrstabs.o ${OBJ1}"
 fl["nm"]="${OBJ1} demanguse.o"
-fl["dlltool"]="defparse.o deflex.o ${OBJ1}"
-fl["windres"]="resrc.o rescoff.o resbin.o rcparse.o rclex.o winduni.o resres.o ${OBJ1}"
 fl["ranlib_simulation"]=" "
 fl["strings"]=${OBJ1}
 for fuzzer in ${!fl[@]}; do
@@ -173,24 +167,14 @@ then
 fi
 
 # Copy seeds out
-for fuzzname in readelf_pef readelf_elf32_csky readelf_elf64_mmix readelf_elf32_littlearm readelf_elf32_bigarm objdump objdump_safe nm objcopy bfd windres addr2line dwarf strings; do
+for fuzzname in readelf_pef readelf_elf32_csky readelf_elf64_mmix readelf_elf32_littlearm readelf_elf32_bigarm objdump objdump_safe nm bfd addr2line dwarf strings; do
   cp $SRC/binary-samples/oss-fuzz-binutils/general_seeds.zip $OUT/fuzz_${fuzzname}_seed_corpus.zip
 done
 # Seed targeted the pef file format
 cp $SRC/binary-samples/oss-fuzz-binutils/fuzz_bfd_ext_seed_corpus.zip $OUT/fuzz_bfd_ext_seed_corpus.zip
 
-# Build prefixed seed corpus for objcopy_options
-OBJCP_PREF=$(mktemp -d)
-unzip -q $SRC/binary-samples/oss-fuzz-binutils/general_seeds.zip -d "$OBJCP_PREF"
-# prepend 256×0x00 to every file
-find "$OBJCP_PREF" -type f -print0 | while IFS= read -r -d '' f; do
-  (dd if=/dev/zero bs=1 count=256 status=none; cat "$f") > "${f}.tmp" && mv "${f}.tmp" "$f"
-done
-(cd "$OBJCP_PREF" && zip -q -r $OUT/fuzz_objcopy_options_seed_corpus.zip .)
-rm -rf "$OBJCP_PREF"
-
 # Copy options files
-for ft in readelf readelf_pef readelf_elf32_csky readelf_elf64_mmix readelf_elf32_littlearm readelf_elf32_bigarm objcopy objcopy_options objdump dlltool disas_ext-bfd_arch_csky nm as windres objdump_safe ranlib_simulation addr2line dwarf; do
+for ft in readelf readelf_pef readelf_elf32_csky readelf_elf64_mmix readelf_elf32_littlearm readelf_elf32_bigarm objdump disas_ext-bfd_arch_csky nm as objdump_safe ranlib_simulation addr2line dwarf; do
   echo "[libfuzzer]" > $OUT/fuzz_${ft}.options
   echo "detect_leaks=0" >> $OUT/fuzz_${ft}.options
 done
